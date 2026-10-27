@@ -1,7 +1,9 @@
 const config = require('./config');
 const { createWorker } = require('tesseract.js');
-const fs = require('fs');
 const { cleanCustomerName } = require('./renderer');
+
+// Candidate models in preference order
+const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
 
 /**
  * Extract KTP details using Google Gemini Vision API
@@ -15,73 +17,97 @@ async function extractKTPWithGemini(imageBuffer, mimeType = 'image/jpeg') {
   }
 
   const base64Data = imageBuffer.toString('base64');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.GEMINI_API_KEY}`;
 
   const prompt = `
-Anda adalah sistem OCR KTP Indonesia yang sangat teliti.
-Analisis foto KTP berikut (bisa miring, terbalik, berbayang, atau sebagian).
-Ekstrak data berikut dan kembalikan HANYA JSON murni tanpa markdown, tanpa backticks:
+Anda adalah AI OCR e-KTP Indonesia berakurasi tingkat tinggi (100% akurat).
+Tugas Anda membaca foto e-KTP Republik Indonesia dengan sangat presisi dan tanpa kesalahan.
+
+PERHATIAN SANGAT PENTING:
+1. NOMOR IDENTITAS (NIK):
+   - NIK terdiri dari tepat 16 DIGIT ANGKA.
+   - Perhatikan dengan sangat cermat setiap angka. Jangan tertukar antara:
+     * Angka 1 dengan 3 atau 7.
+     * Angka 9 dengan 8 atau 5.
+     * Angka 0 dengan 8.
+   - Contoh e-KTP Riau / Pekanbaru biasanya diawali angka "1471..." (jangan sampai terbaca 3471).
+2. NAMA LENGKAP:
+   - Ambil HANYA nama lengkap pemilik e-KTP.
+   - JANGAN PERNAH menyertakan teks dari label lain seperti "TEMPAT", "TGL LAHIR", atau "BEMPATTGLLAHIR".
+3. TEMPAT & TANGGAL LAHIR:
+   - Pisahkan antara nama Tempat Lahir dengan Tanggal Lahir.
+   - Tanggal lahir harus dalam format DD-MM-YYYY (contoh: 13-10-1989).
+4. JENIS KELAMIN:
+   - LAKI-LAKI atau PEREMPUAN.
+
+Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
 {
-  "nik": "16 digit angka NIK tanpa spasi/strip",
-  "nama": "Nama lengkap huruf kapital",
-  "tempatLahir": "Tempat lahir saja (contoh: PEKANBARU, PAKAN SILAKAN)",
-  "tanggalLahir": "DD-MM-YYYY (contoh: 07-12-1990)",
-  "jenisKelamin": "LAKI-LAKI atau PEREMPUAN",
-  "alamatKtp": "Alamat lengkap KTP",
-  "rtRw": "RT/RW jika ada",
-  "kelurahan": "Kelurahan/Desa KTP jika ada",
-  "kecamatan": "Kecamatan KTP jika ada",
-  "agama": "Agama jika ada"
+  "nik": "16 digit NIK murni angka tanpa spasi",
+  "nama": "Nama lengkap kapital",
+  "tempatLahir": "Tempat lahir saja",
+  "tanggalLahir": "DD-MM-YYYY",
+  "jenisKelamin": "PEREMPUAN atau LAKI-LAKI",
+  "alamatKtp": "Alamat KTP jika terlihat"
 }
-Jika salah satu nilai tidak terbaca atau tidak yakin, beri nilai string kosong "". Pastikan NIK terdiri dari 16 digit.
 `;
 
-  const payload = {
-    contents: [
-      {
-        parts: [
-          { text: prompt },
+  let lastError = null;
+
+  for (const model of GEMINI_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.GEMINI_API_KEY}`;
+      const payload = {
+        contents: [
           {
-            inline_data: {
-              mime_type: mimeType,
-              data: base64Data
-            }
+            parts: [
+              { text: prompt },
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: base64Data
+                }
+              }
+            ]
           }
-        ]
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          response_mime_type: "application/json"
+        }
+      };
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API error (${response.status}): ${errorText}`);
       }
-    ],
-    generationConfig: {
-      temperature: 0.1,
-      response_mime_type: "application/json"
+
+      const result = await response.json();
+      const textOutput = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!textOutput) {
+        throw new Error('Tidak ada respon teks');
+      }
+
+      const cleaned = textOutput.replace(/```json/g, '').replace(/```/g, '').trim();
+      const data = JSON.parse(cleaned);
+
+      if (data.nama) data.nama = cleanCustomerName(data.nama);
+      if (data.tempatLahir) data.tempatLahir = cleanCustomerName(data.tempatLahir);
+      if (data.nik) data.nik = data.nik.replace(/\D/g, '');
+
+      console.log(`✅ Sukses membaca KTP dengan model ${model}! NIK: ${data.nik}, Nama: ${data.nama}`);
+      return data;
+    } catch (err) {
+      console.warn(`Model ${model} gagal: ${err.message}. Mencoba model berikutnya...`);
+      lastError = err;
     }
-  };
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini API error (${response.status}): ${errorText}`);
   }
 
-  const result = await response.json();
-  const textOutput = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!textOutput) {
-    throw new Error('Tidak ada respon teks dari Gemini Vision');
-  }
-
-  try {
-    const cleaned = textOutput.replace(/```json/g, '').replace(/```/g, '').trim();
-    const data = JSON.parse(cleaned);
-    if (data.nama) data.nama = cleanCustomerName(data.nama);
-    if (data.tempatLahir) data.tempatLahir = cleanCustomerName(data.tempatLahir);
-    return data;
-  } catch (err) {
-    throw new Error(`Gagal memparsing JSON hasil OCR: ${err.message}`);
-  }
+  throw lastError || new Error('Semua model Gemini gagal memproses KTP');
 }
 
 /**
@@ -121,7 +147,7 @@ function parseRawKTPText(rawText) {
     data.nama = cleanCustomerName(nameMatch[1].replace(/[:\-]/g, ''));
   }
 
-  // TTL: e.g. "T.NAGODANG, 07-12-1990" or "PAKAN SILAKAN, 20-11-1987"
+  // TTL: e.g. "T.NAGODANG, 07-12-1990" or "PEKANBARU, 13-10-1989"
   const ttlMatch = rawText.match(/(?:Tempat\/Tgl\s*Lahir|TTL|Lahir)\s*[:]?\s*([A-Za-z\s\.,]+)[,]\s*(\d{2}[-\/]\d{2}[-\/]\d{4})/i);
   if (ttlMatch) {
     data.tempatLahir = cleanCustomerName(ttlMatch[1].replace(/[:\-]/g, ''));
