@@ -154,6 +154,26 @@ bot.command('set_ae', (ctx) => {
   ctx.reply(`✅ Nama AE diperbarui: ${session.data.aeName}`);
 });
 
+bot.command('set_gemini', (ctx) => {
+  const key = ctx.message.text.substring(11).trim();
+  if (!key) return ctx.reply('Format salah. Contoh: /set_gemini AIzaSy...');
+  config.GEMINI_API_KEY = key;
+  // Update .env file
+  try {
+    const envPath = path.resolve(__dirname, '../.env');
+    let envContent = fs.readFileSync(envPath, 'utf8');
+    if (envContent.includes('GEMINI_API_KEY=')) {
+      envContent = envContent.replace(/GEMINI_API_KEY=.*/, `GEMINI_API_KEY=${key}`);
+    } else {
+      envContent += `\nGEMINI_API_KEY=${key}\n`;
+    }
+    fs.writeFileSync(envPath, envContent);
+    ctx.reply('✅ Gemini API Key berhasil disimpan! AI Vision OCR sekarang aktif sepenuhnya.');
+  } catch (err) {
+    ctx.reply(`✅ Gemini API Key aktif untuk sesi ini (${err.message}).`);
+  }
+});
+
 // Action Handlers
 bot.action('action_new_order', (ctx) => {
   resetSession(ctx.chat.id);
