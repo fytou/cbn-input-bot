@@ -1,0 +1,28 @@
+{
+  "name": "cbn-so-telebot",
+  "version": "1.0.0",
+  "description": "Telegram Bot Otomasi Sales Order dan BA Digital CBN Fiber",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node test_workflow.js"
+  },
+  "keywords": [
+    "telegram-bot",
+    "cbn-fiber",
+    "sales-order",
+    "ba-digital",
+    "ocr",
+    "gemini-ai"
+  ],
+  "author": "fito nardian",
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^0.1.2",
+    "dotenv": "^16.4.7",
+    "sharp": "^0.33.5",
+    "telegraf": "^4.16.3",
+    "tesseract.js": "^6.0.0"
+  }
+}
