@@ -1,4 +1,6 @@
 const config = require('./config');
+const { findTeamByAE } = require('./team');
+const { cleanCustomerName } = require('./renderer');
 
 /**
  * Extracts fields from sales message text
@@ -20,7 +22,6 @@ function parseSalesMessage(text) {
   const emailMatch = text.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
   if (emailMatch) {
     result.email = emailMatch[1].trim();
-    // Auto username: prefix before @
     result.username = result.email.split('@')[0];
   }
 
@@ -40,7 +41,6 @@ function parseSalesMessage(text) {
     || text.match(/\b([0-9]{5}[A-Za-z0-9\.\-_]{3,20})\b/);
   if (homeIdMatch) {
     result.homeId = homeIdMatch[1].trim();
-    // Extract first 5 digits as Kode Pos!
     const zipMatch = result.homeId.match(/^(\d{5})/);
     if (zipMatch) {
       result.kodePos = zipMatch[1];
@@ -63,18 +63,48 @@ function parseSalesMessage(text) {
     result.kecamatan = kecMatch[1].trim().toUpperCase();
   }
 
-  // 6. Service / Paket (e.g. "Paket 40mbps", "FB 20", "FB 100", "CBN FIBER, FIBER 40")
+  // 6. Service / Paket (e.g. "Paket 40mbps", "FB 20", "FB 100", "200 mb")
   const paketMatch = text.match(/(?:Paket|Service|Speed)\s*[:]?\s*([^\n\r]+)/i)
-    || text.match(/\b(20\s*mbps|40\s*mbps|50\s*mbps|100\s*mbps|FB\s*20|FB\s*40|FB\s*100|FIBER\s*\d+)\b/i);
+    || text.match(/\b(20\s*mbps|40\s*mbps|50\s*mbps|100\s*mbps|200\s*mbps|FB\s*20|FB\s*40|FB\s*100|FB\s*200|FIBER\s*\d+)\b/i);
   if (paketMatch) {
     const rawPaket = paketMatch[1].trim();
     result.service = normalizeServiceName(rawPaket);
+    if (rawPaket.includes('100') || rawPaket.includes('200')) {
+      result.templateType = 'FB 100';
+    } else {
+      result.templateType = 'FB 20';
+    }
   }
 
-  // 7. AE Name / Sales Name (if mentioned)
-  const aeMatch = text.match(/(?:AE\s*Name|Sales|AE)\s*[:]?\s*([A-Za-z\s\.,]{3,30})/i);
-  if (aeMatch) {
-    result.aeName = aeMatch[1].trim();
+  // 7. AE Name / Sales Name (single line match only)
+  const aeMatch = text.match(/^[ \t]*(?:Nama\s*AE|AE\s*Name|Sales|AE)[ \t]*:[ \t]*([A-Za-z\s\.,]{2,35})/im);
+  if (aeMatch && aeMatch[1].trim()) {
+    const rawAE = aeMatch[1].trim();
+    result.aeName = rawAE;
+    // Auto lookup TL from AE mapping table!
+    const matchedTeam = findTeamByAE(rawAE);
+    if (matchedTeam) {
+      result.aeName = matchedTeam.aeName;
+      result.tlCode = matchedTeam.tlCode;
+      result.tlName = matchedTeam.tlName;
+      result.vendor = matchedTeam.vendor;
+    }
+  }
+
+  // 8. Explicit TL Code & TL Name (must be on the same line, not empty)
+  const tlCodeMatch = text.match(/^[ \t]*(?:TL\s*Code|Kode\s*TL)[ \t]*:[ \t]*([A-Za-z0-9]+)/im);
+  if (tlCodeMatch && tlCodeMatch[1].trim()) {
+    result.tlCode = tlCodeMatch[1].trim();
+  }
+
+  const tlNameMatch = text.match(/^[ \t]*(?:TL\s*Name|Nama\s*TL)[ \t]*:[ \t]*([A-Za-z\s\.,]{3,35})/im);
+  if (tlNameMatch && tlNameMatch[1].trim()) {
+    result.tlName = tlNameMatch[1].trim();
+  }
+
+  const vendorMatch = text.match(/^[ \t]*(?:Vendor)[ \t]*:[ \t]*([^\r\n]+)/im);
+  if (vendorMatch && vendorMatch[1].trim()) {
+    result.vendor = vendorMatch[1].trim();
   }
 
   return result;
@@ -113,9 +143,10 @@ function formatSalesOrder(data) {
   const tlName = data.tlName || config.DEFAULT_TL_NAME;
   const aeName = data.aeName || config.DEFAULT_AE_NAME;
 
-  const nama = (data.nama || '').toUpperCase();
-  const nik = data.nik || '';
-  const ttl = `${(data.tempatLahir || '').toUpperCase()}, ${data.tanggalLahir || ''}`;
+  const nama = cleanCustomerName(data.nama);
+  const nik = (data.nik || '').replace(/\D/g, '');
+  const ttlPlace = cleanCustomerName(data.tempatLahir);
+  const ttl = `${ttlPlace}, ${data.tanggalLahir || ''}`;
   const gender = (data.jenisKelamin || '').toLowerCase();
   const noHp = data.noHp || '';
   const alamat = data.alamat || '';

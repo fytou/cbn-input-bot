@@ -1,6 +1,7 @@
 const config = require('./config');
 const { createWorker } = require('tesseract.js');
 const fs = require('fs');
+const { cleanCustomerName } = require('./renderer');
 
 /**
  * Extract KTP details using Google Gemini Vision API
@@ -74,7 +75,10 @@ Jika salah satu nilai tidak terbaca atau tidak yakin, beri nilai string kosong "
 
   try {
     const cleaned = textOutput.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleaned);
+    const data = JSON.parse(cleaned);
+    if (data.nama) data.nama = cleanCustomerName(data.nama);
+    if (data.tempatLahir) data.tempatLahir = cleanCustomerName(data.tempatLahir);
+    return data;
   } catch (err) {
     throw new Error(`Gagal memparsing JSON hasil OCR: ${err.message}`);
   }
@@ -114,13 +118,13 @@ function parseRawKTPText(rawText) {
   // Name: usually follows 'Nama' or 'Nama :'
   const nameMatch = rawText.match(/(?:Nama|Nama\s*:)\s*([A-Z\s\.,]{3,40})/i);
   if (nameMatch) {
-    data.nama = nameMatch[1].replace(/[:\-]/g, '').trim().toUpperCase();
+    data.nama = cleanCustomerName(nameMatch[1].replace(/[:\-]/g, ''));
   }
 
   // TTL: e.g. "T.NAGODANG, 07-12-1990" or "PAKAN SILAKAN, 20-11-1987"
   const ttlMatch = rawText.match(/(?:Tempat\/Tgl\s*Lahir|TTL|Lahir)\s*[:]?\s*([A-Za-z\s\.,]+)[,]\s*(\d{2}[-\/]\d{2}[-\/]\d{4})/i);
   if (ttlMatch) {
-    data.tempatLahir = ttlMatch[1].replace(/[:\-]/g, '').trim().toUpperCase();
+    data.tempatLahir = cleanCustomerName(ttlMatch[1].replace(/[:\-]/g, ''));
     data.tanggalLahir = ttlMatch[2].replace(/\//g, '-');
   }
 

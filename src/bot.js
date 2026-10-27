@@ -4,7 +4,14 @@ const path = require('path');
 const config = require('./config');
 const { processKTPImage } = require('./ocr');
 const { parseSalesMessage, formatSalesOrder, getFormattedToday } = require('./parser');
-const { generateBAImage } = require('./renderer');
+const { generateBAImage, cleanCustomerName } = require('./renderer');
+const { 
+  loadTeam, 
+  findTeamByAE, 
+  registerTeamMember, 
+  getUserProfile, 
+  setUserProfile 
+} = require('./team');
 
 if (!config.TELEGRAM_BOT_TOKEN) {
   console.warn('PERINGATAN: TELEGRAM_BOT_TOKEN belum disetel di .env.');
@@ -17,14 +24,15 @@ const sessions = new Map();
 
 function getSession(chatId) {
   if (!sessions.has(chatId)) {
+    const userProf = getUserProfile(String(chatId)) || {};
     sessions.set(chatId, {
       state: 'IDLE',
       data: {
-        vendor: config.DEFAULT_VENDOR,
+        vendor: userProf.vendor || config.DEFAULT_VENDOR,
         soDate: getFormattedToday(),
-        tlCode: config.DEFAULT_TL_CODE,
-        tlName: config.DEFAULT_TL_NAME,
-        aeName: config.DEFAULT_AE_NAME,
+        tlCode: userProf.tlCode || config.DEFAULT_TL_CODE,
+        tlName: userProf.tlName || config.DEFAULT_TL_NAME,
+        aeName: userProf.aeName || config.DEFAULT_AE_NAME,
         nama: '',
         nik: '',
         tempatLahir: '',
@@ -56,23 +64,26 @@ function resetSession(chatId) {
 bot.command('start', async (ctx) => {
   const session = resetSession(ctx.chat.id);
   const welcomeText = `
-👋 *Halo Team Leader ${session.data.tlName}!*
+👋 *Halo ${session.data.tlName || 'Team'}!*
 Selamat datang di *Bot Sales Order & BA Digital CBN*.
 
-Bot ini otomatis memproses kiriman data sales:
-1. 📸 *Kirim Foto KTP* (otomatis OCR NIK, Nama, TTL, Jenis Kelamin).
+Bot ini otomatis memproses data sales & cetak BA digital:
+1. 📸 *Kirim Foto KTP* (otomatis OCR NIK 16 digit, Nama, TTL, Gender).
 2. 📝 *Kirim teks chat sales* (Tikor, Alamat, Home ID, No HP, Email, Paket, AE).
 3. ⚡ *Auto Kode Pos* (diambil otomatis dari 5 digit awal Home ID).
 4. ⚡ *Auto Username* (diambil otomatis dari awalan email).
-5. 🖨️ *Auto Generate*:
-   - Teks Format Sales Order WhatsApp (1x klik langsung copy).
-   - Gambar Formulir BA Digital terisi rapi (Template FB 20 / FB 100).
+5. 👥 *Auto TL & AE Mapping*:
+   Ketik \`nama AE: cece\`, bot otomatis mendeteksi TL CODE & TL NAME!
+6. 🖨️ *Auto Generate*:
+   - Teks Format Sales Order WhatsApp (1x tap langsung copy).
+   - Gambar Formulir BA Digital terisi presisi & simetris (FB 20 / FB 100/200).
 
-Silakan *kirim foto KTP pelanggan* untuk memulai!
+Silakan *kirim foto KTP pelanggan* atau teks data sales untuk memulai!
 `;
   await ctx.replyWithMarkdown(welcomeText, Markup.inlineKeyboard([
     [Markup.button.callback('➕ Mulai Input Order Baru', 'action_new_order')],
-    [Markup.button.callback('⚙️ Pengaturan TL & Vendor', 'action_settings')],
+    [Markup.button.callback('👥 Daftar Tim & AE', 'action_list_team')],
+    [Markup.button.callback('⚙️ Pengaturan Profil Saya', 'action_settings')],
     [Markup.button.callback('ℹ️ Bantuan & Format Teks', 'action_help')]
   ]));
 });
@@ -86,37 +97,89 @@ bot.command('new', async (ctx) => {
 // /help command
 bot.command('help', async (ctx) => {
   const helpText = `
-📖 *Panduan Penggunaan Bot SO CBN*
+📖 *Panduan Penggunaan Bot SO & BA Digital CBN*
 
 *Cara Cepat:*
-1. Kirim foto KTP pelanggan ke bot ini (bisa difoto langsung / miring / berbayang).
+1. Kirim foto KTP pelanggan ke bot ini.
 2. Kirim teks info dari sales yang berisi:
    - Tikor (misal: \`0.415629,101.452324\`)
    - Home ID (misal: \`28452H000.3.06424\` -> auto kode pos: \`28452\`)
    - Alamat Pemasangan (Jl..., Kelurahan, Kecamatan)
    - Email pelanggan (auto username dari nama email)
    - No HP
-   - Nama AE
+   - Nama AE (misal: \`nama AE: cece\`)
 3. Bot akan menampilkan preview data dan tombol konfirmasi.
 4. Klik *[✅ Buat SO & BA Digital]*.
-5. Selesai! Bot mengirimkan format WhatsApp dan formulir BA digital beres tinggal diteruskan ke grup.
+5. Selesai! Bot mengirimkan format WhatsApp dan formulir BA digital presisi.
 
-*Perintah yang tersedia:*
-/start - Buka menu utama
-/new - Reset dan mulai order baru
-/preview - Lihat preview data saat ini
-/generate - Buat SO WA dan cetak BA Digital
-/settings - Ubah nama TL, kode TL, vendor, nama AE
-/help - Buka panduan ini
+*Format Multi-TL & Multi-AE:*
+Anda bisa langsung kirim format:
+\`\`\`
+nama AE : cece
+TL CODE : MMP038
+TL NAME : fito nardian
+\`\`\`
+*(Jika TL CODE & TL NAME dikosongkan, bot otomatis mengambil data TL dari daftar tim!)*
+
+*Perintah Tambahan:*
+/list_team - Lihat daftar seluruh AE dan TL yang terdaftar
+/add_team <Nama AE> | <TL Code> | <TL Name> - Daftarkan AE baru ke TL
+/set_profile <TL Code> | <TL Name> | <Nama AE> - Simpan profil default akun Telegram Anda
+/set_gemini <API_KEY> - Pasang Gemini API Key untuk OCR
 `;
   await ctx.replyWithMarkdown(helpText);
+});
+
+// /list_team command
+bot.command('list_team', async (ctx) => {
+  const team = loadTeam();
+  if (team.length === 0) {
+    return ctx.reply('Belum ada data tim yang tersimpan.');
+  }
+  let msg = `👥 *Daftar Tim Sales & Team Leader:*\n━━━━━━━━━━━━━━━━━━\n`;
+  team.forEach((t, i) => {
+    msg += `${i + 1}. *AE*: ${t.aeName}\n   *TL*: ${t.tlName} (\`${t.tlCode}\`)\n   *Vendor*: ${t.vendor || config.DEFAULT_VENDOR}\n\n`;
+  });
+  msg += `💡 *Tambah AE baru*: \`/add_team Nama AE | Kode TL | Nama TL\``;
+  await ctx.replyWithMarkdown(msg);
+});
+
+// /add_team command: /add_team Cece | MMP038 | fito nardian
+bot.command('add_team', (ctx) => {
+  const input = ctx.message.text.substring(9).trim();
+  const parts = input.split('|').map(s => s.trim());
+  if (parts.length < 3) {
+    return ctx.reply('Format salah.\nContoh: `/add_team Cece novita sari | MMP038 | fito nardian`', { parse_mode: 'Markdown' });
+  }
+  const [ae, tlCode, tlName] = parts;
+  const entry = registerTeamMember(ae, tlCode, tlName);
+  ctx.reply(`✅ *Berhasil mendaftarkan tim!*\nAE: *${entry.aeName}*\nTL Code: \`${entry.tlCode}\`\nTL Name: *${entry.tlName}*`, { parse_mode: 'Markdown' });
+});
+
+// /set_profile command: /set_profile MMP038 | fito nardian | Cece
+bot.command('set_profile', (ctx) => {
+  const input = ctx.message.text.substring(12).trim();
+  const parts = input.split('|').map(s => s.trim());
+  if (parts.length < 2) {
+    return ctx.reply('Format salah.\nContoh: `/set_profile MMP038 | fito nardian | Cece novita sari`', { parse_mode: 'Markdown' });
+  }
+  const profile = {
+    tlCode: parts[0],
+    tlName: parts[1],
+    aeName: parts[2] || config.DEFAULT_AE_NAME,
+    vendor: config.DEFAULT_VENDOR
+  };
+  setUserProfile(String(ctx.chat.id), profile);
+  const session = getSession(ctx.chat.id);
+  Object.assign(session.data, profile);
+  ctx.reply(`✅ *Profil Telegram Anda berhasil disimpan!*\nTL Code: \`${profile.tlCode}\`\nTL Name: *${profile.tlName}*\nDefault AE: *${profile.aeName}*`, { parse_mode: 'Markdown' });
 });
 
 // /settings command
 bot.command('settings', async (ctx) => {
   const session = getSession(ctx.chat.id);
   const text = `
-⚙️ *Pengaturan Default Saat Ini:*
+⚙️ *Profil Sesi Anda Saat Ini:*
 - Vendor: \`${session.data.vendor}\`
 - TL Code: \`${session.data.tlCode}\`
 - TL Name: \`${session.data.tlName}\`
@@ -124,13 +187,13 @@ bot.command('settings', async (ctx) => {
 - Default Paket: \`${session.data.service}\`
 - Template BA: \`${session.data.templateType}\`
 
-Untuk mengubahnya sementara, Anda bisa kirim:
+*Perintah Cepat:*
 \`/set_tl MMP038 fito nardian\`
 \`/set_ae Cece novita sari\`
-\`/set_vendor PT. Milfha Mutiara Prima\`
+\`/set_profile <TL Code> | <TL Name> | <Nama AE>\`
 `;
   await ctx.replyWithMarkdown(text, Markup.inlineKeyboard([
-    [Markup.button.callback('Ganti Template ke FB 20', 'set_tpl_fb20'), Markup.button.callback('Ganti Template ke FB 100', 'set_tpl_fb100')]
+    [Markup.button.callback('Ganti Template ke FB 20', 'set_tpl_fb20'), Markup.button.callback('Ganti Template ke FB 100/200', 'set_tpl_fb100')]
   ]));
 });
 
@@ -143,7 +206,7 @@ bot.command('set_tl', (ctx) => {
   }
   session.data.tlCode = parts[0];
   session.data.tlName = parts.slice(1).join(' ');
-  ctx.reply(`✅ TL diperbarui: ${session.data.tlCode} - ${session.data.tlName}`);
+  ctx.reply(`✅ TL diperbarui: \`${session.data.tlCode}\` - *${session.data.tlName}*`, { parse_mode: 'Markdown' });
 });
 
 bot.command('set_ae', (ctx) => {
@@ -151,14 +214,20 @@ bot.command('set_ae', (ctx) => {
   const name = ctx.message.text.substring(7).trim();
   if (!name) return ctx.reply('Format salah. Contoh: /set_ae Cece novita sari');
   session.data.aeName = name;
-  ctx.reply(`✅ Nama AE diperbarui: ${session.data.aeName}`);
+  const match = findTeamByAE(name);
+  if (match) {
+    session.data.aeName = match.aeName;
+    session.data.tlCode = match.tlCode;
+    session.data.tlName = match.tlName;
+    session.data.vendor = match.vendor;
+  }
+  ctx.reply(`✅ Nama AE diperbarui: *${session.data.aeName}* (TL: ${session.data.tlName})`, { parse_mode: 'Markdown' });
 });
 
 bot.command('set_gemini', (ctx) => {
   const key = ctx.message.text.substring(11).trim();
   if (!key) return ctx.reply('Format salah. Contoh: /set_gemini AIzaSy...');
   config.GEMINI_API_KEY = key;
-  // Update .env file
   try {
     const envPath = path.resolve(__dirname, '../.env');
     let envContent = fs.readFileSync(envPath, 'utf8');
@@ -181,19 +250,30 @@ bot.action('action_new_order', (ctx) => {
   ctx.reply('Silakan kirimkan foto KTP atau teks dari sales! 📸');
 });
 
+bot.action('action_list_team', async (ctx) => {
+  ctx.answerCbQuery();
+  const team = loadTeam();
+  let msg = `👥 *Daftar Tim Sales & Team Leader:*\n━━━━━━━━━━━━━━━━━━\n`;
+  team.forEach((t, i) => {
+    msg += `${i + 1}. *AE*: ${t.aeName}\n   *TL*: ${t.tlName} (\`${t.tlCode}\`)\n\n`;
+  });
+  ctx.replyWithMarkdown(msg);
+});
+
 bot.action('action_settings', async (ctx) => {
   ctx.answerCbQuery();
   const session = getSession(ctx.chat.id);
   ctx.reply(`⚙️ *Pengaturan TL*:
 TL Code: \`${session.data.tlCode}\`
 TL Name: \`${session.data.tlName}\`
+AE Name: \`${session.data.aeName}\`
 Vendor: \`${session.data.vendor}\`
 Template: \`${session.data.templateType}\``, { parse_mode: 'Markdown' });
 });
 
 bot.action('action_help', (ctx) => {
   ctx.answerCbQuery();
-  ctx.reply('Kirimkan foto KTP dan teks info sales (Tikor, Alamat, Home ID, Email, HP). Bot langsung otomatis bekerja!');
+  ctx.reply('Kirimkan foto KTP dan teks info sales (Tikor, Alamat, Home ID, Email, HP, AE). Bot langsung otomatis bekerja!');
 });
 
 bot.action('set_tpl_fb20', (ctx) => {
@@ -206,7 +286,7 @@ bot.action('set_tpl_fb20', (ctx) => {
 bot.action('set_tpl_fb100', (ctx) => {
   const session = getSession(ctx.chat.id);
   session.data.templateType = 'FB 100';
-  ctx.answerCbQuery('Template disetel ke FB 100');
+  ctx.answerCbQuery('Template disetel ke FB 100 / 200');
   showDataPreview(ctx, session);
 });
 
@@ -232,8 +312,10 @@ Kec: siak hulu
 Home ID: 28452H000.3.06424
 Tikor: 0.415629,101.452324
 Email: noviantideri65@gmail.com
-Paket: CBN FIBER, FIBER 40
-AE: Cece novita sari
+Paket: 40mbps
+nama AE: cece
+TL CODE: MMP038
+TL NAME: fito nardian
 \`\`\`
 `;
   ctx.replyWithMarkdown(help);
@@ -245,24 +327,21 @@ bot.on('photo', async (ctx) => {
   const waitMsg = await ctx.reply('🔍 *Memproses foto KTP dengan OCR AI...*', { parse_mode: 'Markdown' });
 
   try {
-    const photo = ctx.message.photo[ctx.message.photo.length - 1]; // highest resolution
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const fileLink = await ctx.telegram.getFileLink(photo.file_id);
 
-    // Download image
     const response = await fetch(fileLink.href);
     const arrayBuffer = await response.arrayBuffer();
     const imageBuffer = Buffer.from(arrayBuffer);
 
-    // Run OCR
     const ocrResult = await processKTPImage(imageBuffer, 'image/jpeg');
 
-    if (ocrResult.nama) session.data.nama = ocrResult.nama;
-    if (ocrResult.nik) session.data.nik = ocrResult.nik;
-    if (ocrResult.tempatLahir) session.data.tempatLahir = ocrResult.tempatLahir;
+    if (ocrResult.nama) session.data.nama = cleanCustomerName(ocrResult.nama);
+    if (ocrResult.nik) session.data.nik = ocrResult.nik.replace(/\D/g, '');
+    if (ocrResult.tempatLahir) session.data.tempatLahir = cleanCustomerName(ocrResult.tempatLahir);
     if (ocrResult.tanggalLahir) session.data.tanggalLahir = ocrResult.tanggalLahir;
     if (ocrResult.jenisKelamin) session.data.jenisKelamin = ocrResult.jenisKelamin;
 
-    // Check if user also sent caption with text
     if (ctx.message.caption) {
       const parsedText = parseSalesMessage(ctx.message.caption);
       Object.assign(session.data, parsedText);
@@ -285,10 +364,10 @@ bot.on('text', async (ctx) => {
   const session = getSession(ctx.chat.id);
   const text = ctx.message.text;
 
-  // Check if manual KTP format
+  // 1. Smart parse with regex
   const parsed = parseSalesMessage(text);
   
-  // Also check if user typed individual key:value pairs
+  // 2. Multi-line key-value parsing
   const lines = text.split('\n');
   for (const line of lines) {
     const parts = line.split(':');
@@ -296,12 +375,16 @@ bot.on('text', async (ctx) => {
       const key = parts[0].trim().toLowerCase();
       const val = parts.slice(1).join(':').trim();
 
-      if (key.includes('nama pelanggan') || key === 'nama') session.data.nama = val.toUpperCase();
-      if (key.includes('ktp') || key === 'nik') session.data.nik = val.replace(/\D/g, '');
+      if (key.includes('nama pelanggan') || key === 'nama') {
+        session.data.nama = cleanCustomerName(val);
+      }
+      if (key.includes('ktp') || key === 'nik') {
+        session.data.nik = val.replace(/\D/g, '');
+      }
       if (key === 'ttl') {
         const ttlParts = val.split(',');
         if (ttlParts.length >= 2) {
-          session.data.tempatLahir = ttlParts[0].trim().toUpperCase();
+          session.data.tempatLahir = cleanCustomerName(ttlParts[0]);
           session.data.tanggalLahir = ttlParts[1].trim();
         }
       }
@@ -324,14 +407,35 @@ bot.on('text', async (ctx) => {
       if (key.includes('username')) session.data.username = val;
       if (key.includes('service') || key.includes('paket')) {
         session.data.service = val;
-        if (val.includes('100')) session.data.templateType = 'FB 100';
+        if (val.includes('100') || val.includes('200')) session.data.templateType = 'FB 100';
         else session.data.templateType = 'FB 20';
       }
-      if (key.includes('ae')) session.data.aeName = val;
+      if (key.includes('ae')) {
+        session.data.aeName = val;
+        const matched = findTeamByAE(val);
+        if (matched) {
+          session.data.aeName = matched.aeName;
+          if (!session.data.tlCode || session.data.tlCode === config.DEFAULT_TL_CODE) {
+            session.data.tlCode = matched.tlCode;
+          }
+          if (!session.data.tlName || session.data.tlName === config.DEFAULT_TL_NAME) {
+            session.data.tlName = matched.tlName;
+          }
+        }
+      }
+      if (key.includes('tl code') || key.includes('kode tl')) {
+        if (val) session.data.tlCode = val;
+      }
+      if (key.includes('tl name') || key.includes('nama tl')) {
+        if (val) session.data.tlName = val;
+      }
+      if (key.includes('vendor')) {
+        if (val) session.data.vendor = val;
+      }
     }
   }
 
-  // Merge any parsed elements
+  // Merge any parsed elements from parseSalesMessage
   if (parsed.tikor && !session.data.tikor) session.data.tikor = parsed.tikor;
   if (parsed.email && !session.data.email) session.data.email = parsed.email;
   if (parsed.username && !session.data.username) session.data.username = parsed.username;
@@ -343,8 +447,16 @@ bot.on('text', async (ctx) => {
   if (parsed.alamat && !session.data.alamat) session.data.alamat = parsed.alamat;
   if (parsed.kelurahan && !session.data.kelurahan) session.data.kelurahan = parsed.kelurahan;
   if (parsed.kecamatan && !session.data.kecamatan) session.data.kecamatan = parsed.kecamatan;
-  if (parsed.service && !session.data.service) session.data.service = parsed.service;
-  if (parsed.aeName && !session.data.aeName) session.data.aeName = parsed.aeName;
+  if (parsed.service && !session.data.service) {
+    session.data.service = parsed.service;
+    if (parsed.templateType) session.data.templateType = parsed.templateType;
+  }
+  if (parsed.aeName && (!session.data.aeName || session.data.aeName === config.DEFAULT_AE_NAME)) {
+    session.data.aeName = parsed.aeName;
+  }
+  if (parsed.tlCode) session.data.tlCode = parsed.tlCode;
+  if (parsed.tlName) session.data.tlName = parsed.tlName;
+  if (parsed.vendor) session.data.vendor = parsed.vendor;
 
   await showDataPreview(ctx, session);
 });
@@ -372,15 +484,18 @@ async function showDataPreview(ctx, session) {
 📧 *Email*: ${d.email || '_(belum terisi)_'}
 💻 *Username*: \`${username}\` _(Auto dari Email)_
 ⚡ *Paket*: ${d.service || 'CBN FIBER, FIBER 20'}
-👨‍💼 *AE*: ${d.aeName || config.DEFAULT_AE_NAME}
-📄 *Template BA*: *${d.templateType}*
+━━━━━━━━━━━━━━━━━━
+🏢 *Vendor*: ${d.vendor || config.DEFAULT_VENDOR}
+👨‍💼 *AE*: *${d.aeName || config.DEFAULT_AE_NAME}*
+👔 *TL*: *${d.tlName || config.DEFAULT_TL_NAME}* (\`${d.tlCode || config.DEFAULT_TL_CODE}\`)
+📄 *Template Form*: *${d.templateType}*
 ━━━━━━━━━━━━━━━━━━
 `;
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('✅ Buat SO & BA Digital', 'action_generate')],
     [
-      Markup.button.callback(d.templateType === 'FB 20' ? '🔘 Gunakan FB 100' : '🔘 Gunakan FB 20', 
+      Markup.button.callback(d.templateType === 'FB 20' ? '🔘 Gunakan FB 100/200' : '🔘 Gunakan FB 20', 
         d.templateType === 'FB 20' ? 'set_tpl_fb100' : 'set_tpl_fb20')
     ],
     [
@@ -409,7 +524,7 @@ async function handleGenerate(ctx, session) {
     d.username = d.email.split('@')[0];
   }
 
-  const generatingMsg = await ctx.reply('⏳ *Sedang merender Formulir BA Digital CBN...*', { parse_mode: 'Markdown' });
+  const generatingMsg = await ctx.reply('⏳ *Sedang merender Formulir BA Digital CBN Presisi...*', { parse_mode: 'Markdown' });
 
   try {
     // 1. Generate BA Digital Image
@@ -422,7 +537,7 @@ async function handleGenerate(ctx, session) {
     // Remove loading message
     await ctx.telegram.deleteMessage(ctx.chat.id, generatingMsg.message_id).catch(() => {});
 
-    // Send Formatted SO Text (in pre block so one-tap copy in Telegram!)
+    // Send Formatted SO Text
     const responseHeader = `✅ *Sales Order CBN Berhasil Dibuat!*
 Tekan teks di dalam kotak bawah untuk langsung menyalin ke WhatsApp:`;
 
@@ -433,7 +548,7 @@ Tekan teks di dalam kotak bawah untuk langsung menyalin ke WhatsApp:`;
     await ctx.replyWithPhoto(
       { source: tempOutFile },
       { 
-        caption: `📄 *BA Digital Layanan CBN* (${d.templateType})\nPelanggan: *${d.nama}*\nNIK: \`${d.nik}\`\nHome ID: \`${d.homeId || '-'}\``,
+        caption: `📄 *BA Digital Layanan CBN* (${d.templateType})\nPelanggan: *${d.nama}*\nNIK: \`${d.nik}\`\nHome ID: \`${d.homeId || '-'}\`\nAE: *${d.aeName}* | TL: *${d.tlName}*`,
         parse_mode: 'Markdown'
       }
     );
@@ -467,7 +582,6 @@ function startBot() {
       console.error('Gagal menjalankan Telegram Bot:', err.message);
     });
 
-  // Enable graceful stop
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
