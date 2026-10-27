@@ -321,6 +321,15 @@ TL NAME: fito nardian
   ctx.replyWithMarkdown(help);
 });
 
+function applyParsedData(session, parsed) {
+  if (!parsed) return;
+  for (const [k, v] of Object.entries(parsed)) {
+    if (v !== undefined && v !== null && v !== '') {
+      session.data[k] = v;
+    }
+  }
+}
+
 // Photo handler: handles KTP photo
 bot.on('photo', async (ctx) => {
   const session = getSession(ctx.chat.id);
@@ -344,7 +353,7 @@ bot.on('photo', async (ctx) => {
 
     if (ctx.message.caption) {
       const parsedText = parseSalesMessage(ctx.message.caption);
-      Object.assign(session.data, parsedText);
+      applyParsedData(session, parsedText);
     }
 
     await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
@@ -364,99 +373,9 @@ bot.on('text', async (ctx) => {
   const session = getSession(ctx.chat.id);
   const text = ctx.message.text;
 
-  // 1. Smart parse with regex
+  // Smart unified parser
   const parsed = parseSalesMessage(text);
-  
-  // 2. Multi-line key-value parsing
-  const lines = text.split('\n');
-  for (const line of lines) {
-    const parts = line.split(':');
-    if (parts.length >= 2) {
-      const key = parts[0].trim().toLowerCase();
-      const val = parts.slice(1).join(':').trim();
-
-      if (key.includes('nama pelanggan') || key === 'nama') {
-        session.data.nama = cleanCustomerName(val);
-      }
-      if (key.includes('ktp') || key === 'nik') {
-        session.data.nik = val.replace(/\D/g, '');
-      }
-      if (key === 'ttl') {
-        const ttlParts = val.split(',');
-        if (ttlParts.length >= 2) {
-          session.data.tempatLahir = cleanCustomerName(ttlParts[0]);
-          session.data.tanggalLahir = ttlParts[1].trim();
-        }
-      }
-      if (key.includes('kelamin') || key === 'gender') session.data.jenisKelamin = val;
-      if (key.includes('hp') || key.includes('telepon')) session.data.noHp = val;
-      if (key.includes('alamat')) session.data.alamat = val;
-      if (key.includes('kelurahan') || key === 'kel') session.data.kelurahan = val.toUpperCase();
-      if (key.includes('kecamatan') || key === 'kec') session.data.kecamatan = val.toUpperCase();
-      if (key.includes('home id') || key.includes('homepass')) {
-        session.data.homeId = val;
-        const zip = val.match(/^(\d{5})/);
-        if (zip) session.data.kodePos = zip[1];
-      }
-      if (key.includes('kode pos') || key === 'pos') session.data.kodePos = val;
-      if (key.includes('tikor') || key.includes('koordinat')) session.data.tikor = val;
-      if (key.includes('email')) {
-        session.data.email = val;
-        session.data.username = val.split('@')[0];
-      }
-      if (key.includes('username')) session.data.username = val;
-      if (key.includes('service') || key.includes('paket')) {
-        session.data.service = val;
-        if (val.includes('100') || val.includes('200')) session.data.templateType = 'FB 100';
-        else session.data.templateType = 'FB 20';
-      }
-      if (key.includes('ae')) {
-        session.data.aeName = val;
-        const matched = findTeamByAE(val);
-        if (matched) {
-          session.data.aeName = matched.aeName;
-          if (!session.data.tlCode || session.data.tlCode === config.DEFAULT_TL_CODE) {
-            session.data.tlCode = matched.tlCode;
-          }
-          if (!session.data.tlName || session.data.tlName === config.DEFAULT_TL_NAME) {
-            session.data.tlName = matched.tlName;
-          }
-        }
-      }
-      if (key.includes('tl code') || key.includes('kode tl')) {
-        if (val) session.data.tlCode = val;
-      }
-      if (key.includes('tl name') || key.includes('nama tl')) {
-        if (val) session.data.tlName = val;
-      }
-      if (key.includes('vendor')) {
-        if (val) session.data.vendor = val;
-      }
-    }
-  }
-
-  // Merge any parsed elements from parseSalesMessage
-  if (parsed.tikor && !session.data.tikor) session.data.tikor = parsed.tikor;
-  if (parsed.email && !session.data.email) session.data.email = parsed.email;
-  if (parsed.username && !session.data.username) session.data.username = parsed.username;
-  if (parsed.noHp && !session.data.noHp) session.data.noHp = parsed.noHp;
-  if (parsed.homeId && !session.data.homeId) {
-    session.data.homeId = parsed.homeId;
-    if (parsed.kodePos) session.data.kodePos = parsed.kodePos;
-  }
-  if (parsed.alamat && !session.data.alamat) session.data.alamat = parsed.alamat;
-  if (parsed.kelurahan && !session.data.kelurahan) session.data.kelurahan = parsed.kelurahan;
-  if (parsed.kecamatan && !session.data.kecamatan) session.data.kecamatan = parsed.kecamatan;
-  if (parsed.service && !session.data.service) {
-    session.data.service = parsed.service;
-    if (parsed.templateType) session.data.templateType = parsed.templateType;
-  }
-  if (parsed.aeName && (!session.data.aeName || session.data.aeName === config.DEFAULT_AE_NAME)) {
-    session.data.aeName = parsed.aeName;
-  }
-  if (parsed.tlCode) session.data.tlCode = parsed.tlCode;
-  if (parsed.tlName) session.data.tlName = parsed.tlName;
-  if (parsed.vendor) session.data.vendor = parsed.vendor;
+  applyParsedData(session, parsed);
 
   await showDataPreview(ctx, session);
 });
