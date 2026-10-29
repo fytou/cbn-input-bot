@@ -2,8 +2,8 @@ const config = require('./config');
 const { createWorker } = require('tesseract.js');
 const { cleanCustomerName } = require('./renderer');
 
-// Candidate models in preference order
-const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+// Candidate models in preference order (lite first for ultra-fast response & no 503 spike)
+const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash'];
 
 /**
  * Extract KTP details using Google Gemini Vision API
@@ -78,7 +78,8 @@ Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(7000)
       });
 
       if (!response.ok) {
