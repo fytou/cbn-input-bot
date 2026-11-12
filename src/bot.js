@@ -345,6 +345,7 @@ bot.on('photo', async (ctx) => {
 
     const ocrResult = await processKTPImage(imageBuffer, 'image/jpeg');
 
+    const hasDetectedKTP = !!(ocrResult.nama || ocrResult.nik);
     if (ocrResult.nama) session.data.nama = cleanCustomerName(ocrResult.nama);
     if (ocrResult.nik) session.data.nik = ocrResult.nik.replace(/\D/g, '');
     if (ocrResult.tempatLahir) session.data.tempatLahir = cleanCustomerName(ocrResult.tempatLahir);
@@ -357,7 +358,11 @@ bot.on('photo', async (ctx) => {
     }
 
     await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id).catch(() => {});
-    await ctx.reply('✅ *KTP berhasil dideteksi!*', { parse_mode: 'Markdown' });
+    if (hasDetectedKTP) {
+      await ctx.reply('✅ *KTP berhasil dideteksi!*', { parse_mode: 'Markdown' });
+    } else {
+      await ctx.reply('⚠️ *Data KTP belum terbaca.* Cek apakah Gemini API Key di VPS sudah terisi lengkap.', { parse_mode: 'Markdown' });
+    }
     await showDataPreview(ctx, session);
   } catch (error) {
     console.error('Error saat proses foto KTP:', error);
