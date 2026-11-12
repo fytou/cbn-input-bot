@@ -1,8 +1,9 @@
 const config = require('./config');
 const { createWorker } = require('tesseract.js');
+const sharp = require('sharp');
 const { cleanCustomerName } = require('./renderer');
 
-// Candidate models in preference order (lite first for ultra-fast response & no 503 spike)
+// Candidate models in preference order
 const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash'];
 
 /**
@@ -16,7 +17,20 @@ async function extractKTPWithGemini(imageBuffer, mimeType = 'image/jpeg') {
     throw new Error('GEMINI_API_KEY belum disetel di file .env');
   }
 
-  const base64Data = imageBuffer.toString('base64');
+  // Compress & optimize image for fast upload from VPS to Google API
+  let uploadBuffer = imageBuffer;
+  let uploadMime = mimeType;
+  try {
+    uploadBuffer = await sharp(imageBuffer)
+      .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    uploadMime = 'image/jpeg';
+  } catch (e) {
+    console.warn('Sharp optimization skipped:', e.message);
+  }
+
+  const base64Data = uploadBuffer.toString('base64');
 
   const prompt = `
 Anda adalah AI OCR e-KTP Indonesia berakurasi tingkat tinggi (100% akurat).
@@ -62,7 +76,7 @@ Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
               { text: prompt },
               {
                 inline_data: {
-                  mime_type: mimeType,
+                  mime_type: uploadMime,
                   data: base64Data
                 }
               }
@@ -79,7 +93,7 @@ Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(7000)
+        signal: AbortSignal.timeout(25000)
       });
 
       if (!response.ok) {
