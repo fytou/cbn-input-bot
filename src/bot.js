@@ -290,6 +290,13 @@ bot.action('set_tpl_fb100', (ctx) => {
   showDataPreview(ctx, session);
 });
 
+bot.action('set_tpl_fb150', (ctx) => {
+  const session = getSession(ctx.chat.id);
+  session.data.templateType = 'FB 150';
+  ctx.answerCbQuery('Template disetel ke FB 150');
+  showDataPreview(ctx, session);
+});
+
 bot.action('action_generate', async (ctx) => {
   ctx.answerCbQuery('Memproses BA Digital...');
   const session = getSession(ctx.chat.id);
@@ -419,8 +426,9 @@ async function showDataPreview(ctx, session) {
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('✅ Buat SO & BA Digital', 'action_generate')],
     [
-      Markup.button.callback(d.templateType === 'FB 20' ? '🔘 Gunakan FB 100/200' : '🔘 Gunakan FB 20', 
-        d.templateType === 'FB 20' ? 'set_tpl_fb100' : 'set_tpl_fb20')
+      Markup.button.callback(d.templateType === 'FB 20' ? '🔘 FB 20' : 'FB 20', 'set_tpl_fb20'),
+      Markup.button.callback(d.templateType === 'FB 100' ? '🔘 FB 100/200' : 'FB 100/200', 'set_tpl_fb100'),
+      Markup.button.callback(d.templateType === 'FB 150' ? '🔘 FB 150' : 'FB 150', 'set_tpl_fb150')
     ],
     [
       Markup.button.callback('✏️ Edit Manual / Format Text', 'action_edit_manual'),

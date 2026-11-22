@@ -68,7 +68,15 @@ Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
 
   for (const model of GEMINI_MODELS) {
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.GEMINI_API_KEY}`;
+      const isApiKey = config.GEMINI_API_KEY.startsWith('AIza');
+      let url = isApiKey 
+        ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.GEMINI_API_KEY}`
+        : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      let headers = { 'Content-Type': 'application/json' };
+      if (!isApiKey) {
+        headers['Authorization'] = `Bearer ${config.GEMINI_API_KEY}`;
+      }
+
       const payload = {
         contents: [
           {
@@ -89,12 +97,30 @@ Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
         }
       };
 
-      const response = await fetch(url, {
+      let response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(25000)
       });
+
+      if (!response.ok && (response.status === 401 || response.status === 400)) {
+        const errPeek = await response.clone().text();
+        if (errPeek.includes('ACCESS_TOKEN_TYPE_UNSUPPORTED') || errPeek.includes('UNAUTHENTICATED')) {
+          const altUrl = !isApiKey
+            ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${config.GEMINI_API_KEY}`
+            : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+          const altHeaders = isApiKey
+            ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.GEMINI_API_KEY}` }
+            : { 'Content-Type': 'application/json' };
+          response = await fetch(altUrl, {
+            method: 'POST',
+            headers: altHeaders,
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(25000)
+          });
+        }
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -152,9 +178,15 @@ function parseRawKTPText(rawText) {
     alamatKtp: ''
   };
 
-  // NIK: 16 digits
+  // NIK: 16 digits (support space-separated or raw format)
   const nikMatch = rawText.match(/\b([1-9][0-9]{15})\b/);
-  if (nikMatch) data.nik = nikMatch[1];
+  if (nikMatch) {
+    data.nik = nikMatch[1];
+  } else {
+    const rawDigits = rawText.replace(/[^0-9]/g, '');
+    const candidate16 = rawDigits.match(/[1-9][0-9]{15}/);
+    if (candidate16) data.nik = candidate16[0];
+  }
 
   // Name: usually follows 'Nama' or 'Nama :'
   const nameMatch = rawText.match(/(?:Nama|Nama\s*:)\s*([A-Z\s\.,]{3,40})/i);

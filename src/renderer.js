@@ -93,10 +93,12 @@ function formatZipBoxesSvg(zip) {
  * @returns {Promise<string>}
  */
 async function generateBAImage(data, templateType = 'FB 20', outputPath = null) {
-  const is100 = templateType.includes('100') || templateType.includes('200');
-  const templateFile = is100
-    ? path.resolve(__dirname, '../templates/template_fb100.png')
-    : path.resolve(__dirname, '../templates/template_fb20.png');
+  let templateFile = path.resolve(__dirname, '../templates/template_fb20.png');
+  if (templateType.includes('150')) {
+    templateFile = path.resolve(__dirname, '../templates/template_fb150.png');
+  } else if (templateType.includes('100') || templateType.includes('200')) {
+    templateFile = path.resolve(__dirname, '../templates/template_fb100.png');
+  }
 
   if (!fs.existsSync(templateFile)) {
     throw new Error(`Template file tidak ditemukan: ${templateFile}`);

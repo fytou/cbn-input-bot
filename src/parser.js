@@ -73,11 +73,16 @@ function parseSalesMessage(text) {
         result.username = val.trim();
       } else if (key.includes('paket') || key.includes('service') || key.includes('speed')) {
         result.service = normalizeServiceName(val);
-        const speedNum = parseInt(val.match(/\d+/)?.[0] || '20', 10);
-        if (speedNum >= 100) {
-          result.templateType = 'FB 100';
+        const lowerVal = val.toLowerCase();
+        if (lowerVal.includes('150')) {
+          result.templateType = 'FB 150';
         } else {
-          result.templateType = 'FB 20';
+          const speedNum = parseInt(val.match(/\d+/)?.[0] || '20', 10);
+          if (speedNum >= 100) {
+            result.templateType = 'FB 100';
+          } else {
+            result.templateType = 'FB 20';
+          }
         }
       } else if (key.includes('ae') || key.includes('sales')) {
         result.aeName = val.trim();
@@ -148,6 +153,22 @@ function parseSalesMessage(text) {
     result.username = result.email.split('@')[0];
   }
 
+  // Fallback package detection from unlabelled text
+  if (!result.service) {
+    const pkgMatch150 = text.match(/\b(150\s*\+\s*150|fb\s*150|fiber\s*150|150\s*mbps)\b/i);
+    if (pkgMatch150) {
+      result.service = 'CBN FIBER, FIBER 150';
+      result.templateType = 'FB 150';
+    } else {
+      const pkgMatch = text.match(/\b(100\s*mbps|fb\s*100|200\s*mbps|fb\s*200|50\s*mbps|fb\s*50|20\s*mbps|fb\s*20)\b/i);
+      if (pkgMatch) {
+        result.service = normalizeServiceName(pkgMatch[1]);
+        const speedNum = parseInt(pkgMatch[1].match(/\d+/)?.[0] || '20', 10);
+        result.templateType = speedNum >= 100 ? 'FB 100' : 'FB 20';
+      }
+    }
+  }
+
   return result;
 }
 
@@ -156,6 +177,9 @@ function parseSalesMessage(text) {
  */
 function normalizeServiceName(raw) {
   if (!raw) return config.DEFAULT_SERVICE;
+  if (/150/.test(raw)) {
+    return 'CBN FIBER, FIBER 150';
+  }
   const num = raw.match(/\d+/)?.[0];
   if (num) {
     return `CBN FIBER, FIBER ${num}`;

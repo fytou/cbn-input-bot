@@ -16,6 +16,7 @@ module.exports = {
   // Template Paths
   TEMPLATES: {
     'FB 20': 'templates/template_fb20.png',
-    'FB 100': 'templates/template_fb100.png'
+    'FB 100': 'templates/template_fb100.png',
+    'FB 150': 'templates/template_fb150.png'
   }
 };
