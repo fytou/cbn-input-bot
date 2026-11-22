@@ -3,8 +3,13 @@ const { createWorker } = require('tesseract.js');
 const sharp = require('sharp');
 const { cleanCustomerName } = require('./renderer');
 
-// Candidate models in preference order
-const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.8-flash'];
+// Candidate models in preference order (put stable full model first, followed by fast lite models)
+const GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite'
+];
 
 /**
  * Extract KTP details using Google Gemini Vision API
@@ -17,15 +22,14 @@ async function extractKTPWithGemini(imageBuffer, mimeType = 'image/jpeg') {
     throw new Error('GEMINI_API_KEY belum disetel di file .env');
   }
 
-  // Compress & optimize image for fast upload from VPS to Google API
+  // Compress & optimize image for ultra-fast upload from VPS to Google API
   let uploadBuffer = imageBuffer;
-  let uploadMime = mimeType;
+  let uploadMime = 'image/jpeg';
   try {
     uploadBuffer = await sharp(imageBuffer)
-      .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 85 })
+      .resize({ width: 1000, height: 1000, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80 })
       .toBuffer();
-    uploadMime = 'image/jpeg';
   } catch (e) {
     console.warn('Sharp optimization skipped:', e.message);
   }
@@ -101,8 +105,20 @@ Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(25000)
+        signal: AbortSignal.timeout(45000)
       });
+
+      // Handle temporary 503 high demand spike with auto-retry
+      if (response.status === 503) {
+        console.warn(`Model ${model} mengalami lonjakan traffic (503). Menunggu 2 detik lalu mencoba lagi...`);
+        await new Promise(r => setTimeout(r, 2000));
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(45000)
+        });
+      }
 
       if (!response.ok && (response.status === 401 || response.status === 400)) {
         const errPeek = await response.clone().text();
@@ -117,7 +133,7 @@ Kembalikan HANYA format JSON valid tanpa tanda kutip markdown, tanpa backticks:
             method: 'POST',
             headers: altHeaders,
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(25000)
+            signal: AbortSignal.timeout(45000)
           });
         }
       }
@@ -178,14 +194,21 @@ function parseRawKTPText(rawText) {
     alamatKtp: ''
   };
 
-  // NIK: 16 digits (support space-separated or raw format)
-  const nikMatch = rawText.match(/\b([1-9][0-9]{15})\b/);
-  if (nikMatch) {
-    data.nik = nikMatch[1];
-  } else {
-    const rawDigits = rawText.replace(/[^0-9]/g, '');
-    const candidate16 = rawDigits.match(/[1-9][0-9]{15}/);
-    if (candidate16) data.nik = candidate16[0];
+  // NIK: 16 digits (prioritize line with NIK keyword first)
+  const nikWithPrefix = rawText.match(/(?:NIK|NOMOR|IDENTITAS)\D*([1-9][0-9\s]{15,25})/i);
+  if (nikWithPrefix) {
+    const candidate = nikWithPrefix[1].replace(/\D/g, '').substring(0, 16);
+    if (candidate.length === 16) data.nik = candidate;
+  }
+  if (!data.nik) {
+    const nikMatch = rawText.match(/\b([1-9][0-9]{15})\b/);
+    if (nikMatch) {
+      data.nik = nikMatch[1];
+    } else {
+      const rawDigits = rawText.replace(/[^0-9]/g, '');
+      const candidate16 = rawDigits.match(/[1-9][0-9]{15}/);
+      if (candidate16) data.nik = candidate16[0];
+    }
   }
 
   // Name: usually follows 'Nama' or 'Nama :'
